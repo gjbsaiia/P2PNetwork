@@ -13,9 +13,9 @@ import java.util.*;
 /*All processes running at a given time:
  * 1. user requests + inputs at command line --> P2P.main()
  * 2. periodically checking connections (heartbeats) 
- *            --> Runner heartbeat = (new Runner(peers, -1)).run();
+ *            --> Manager heartbeat = (new Manager(peers, -1)).run();
  * 3. listening to connections to respond/forward queries accross connections 
- *            ---> Runner queries = (new Runner(peers, 1)).run();
+ *            ---> QManager queries = (new QManager(peers, 1)).run();
  *                 ---> each peer will run at least 2 processes here (1 for each peer)
  * 4. listen for and respond to file requests from peers
  *            ---> ServerSocket
