@@ -1,2 +1,0 @@
-eecslab-13.case.edu 1235
-eecslab-12.case.edu 1234
