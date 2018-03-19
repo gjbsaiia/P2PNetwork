@@ -1,7 +1,6 @@
 //Griffin Saiia, Gjs64
 //Networks
 //Project 1, P2P Network
-//Mother File: P2P Class
 
 import java.nio.channels.Pipe;
 import java.lang.Thread;
@@ -13,14 +12,13 @@ import java.util.*;
 /*All processes running at a given time:
  * 1. user requests + inputs at command line --> P2P.main()
  * 2. periodically checking connections (heartbeats) 
- *            --> Manager heartbeat = (new Manager(peers, -1)).run();
+ *            --> Manager SendQueries = (new Runner(peers, -1)).run();
  * 3. listening to connections to respond/forward queries accross connections 
- *            ---> QManager queries = (new QManager(peers, 1)).run();
+ *            ---> QManager HandleQueries = (new Runner(peers, 1)).run();
  *                 ---> each peer will run at least 2 processes here (1 for each peer)
  * 4. listen for and respond to file requests from peers
  *            ---> ServerSocket
  */
-
 
 //responsible for launching and maintaining all processes, has main that takes user input
 /*USER COMMANDS:
@@ -29,6 +27,7 @@ import java.util.*;
  * Connect - launches connections with each peer this peer knows
  * Exit - closes connections, and terminates
  */
+
 public class P2P extends Pipe, Thread{
   //dedicating this port to all heartbeats accross peers
   private static final int HeartBeatPort = 51820;
@@ -39,33 +38,70 @@ public class P2P extends Pipe, Thread{
   
   //Processes controlled by P2P
   private Manager query;
-  private QManager hearbeat;
-  private ServerSocket listener;
+  private QManager sendQueries;
+  private ServerSocket handleQueries;
   private ServerSocket myRequests;
   
   //Paths and Files
-  private String shared;
-  private String obtained; 
-  private File peers;
+  private File shared;
+  private File obtained; 
+  private String peerFile;
   //mode of communication accross processes
   private Pipe processCom;
   
   
   private void P2P(){
-    shared = "~/P2P/shared/";
-    obtained = "~/P2P/obtained/";
+    shared = new File("~/P2P/shared/");
+    obtained = new File("~/P2P/obtained/");
+    peerFile = "~/P2P/config_sharing.txt";
+    LinkedList<Node> peerListing = parseToNodeList(peerFile);
+    LinkedList<String> fileList = parseToFileList(shared);
+    PipedOutputStream sentQuery = new PipedOutputStream();
+    PipedInputStream queryNumber = new PipedInputStream();
+    sentQuery.connect(queryNumber);
+    queryNumber.connect(sentQuery);
+    BufferedReader numberBuffer = new BufferedReader(queryNumber);
+    PipedOutputStream responseQuery = new PipedOutputStream();
+    PipedInputStream handleQuery = new PipedInputStream(responseQuery);
+    responseQuery.connect(handleQuery);
+    BufferedReader queryBuffer = new BufferedReader(handleQuery);
+    sendQueries = new QManager(peerListing, fileList, responseQuery, numberBuffer);
+    handleQueries = new Manager(peerListing, queryBuffer);
   }
   
+  private LinkedList<Node> parseToNodeList(File peers){
+    LinkedList<Node> returnedList = new LinkedList<Node>();
+    String line;
+    BufferedReader reader = new BufferedReader(new FileReader(peers));
+    String[] components
+    while((line = reader.getLine()) != null){
+      components = line.split(" ");
+      returnedList.add(new Node(components[0], components[1]));
+    }
+    return returnedList;
+  }
+  
+  private LinkedList<String> parseToFileList(File dir){
+    File[] listedFiles = dir.listFiles();
+    LinkedList<String> returnedList = new LinkedList<String>();
+    int i = 0;
+    while(i < listedFiles.length){
+      returnedList.add(listedFiles[i].getName());
+      i++;
+    }
+    return returnedList;
+  }
   
   private class Manager extends Thread{
     private LinkedList<PeerHandler> peerList;
-    
+    private BufferedReader newQuery;
     //constructor for hearbeat
-    private void Manager(LinkedList<Node> peers){
+    private void Manager(LinkedList<Node> peers, BufferedReader input){
       peerList = new LinkedList<PeerHandler>();
+      newQuery = input;
       int i = 0;
       while(i < peers.size()){
-        peerList.add(new PeerHandler(peers.getHost()));
+        peerList.add(new PeerHandler(peers.peek().getHost()));
       }
       
     }
@@ -96,33 +132,47 @@ public class P2P extends Pipe, Thread{
   
   private class QManager extends Thread{
     private LinkedList<PeerHandler> peerList;
+    private PipedOutputStream handleQuery;
+    private BufferedReader queryNumber;
+      
     
-    private void QManager(LinkedList<Node> Addressing, LinkedList<String> fileData){
-      //create matchedQuery
+    private void QManager(LinkedList<Node> Addressing, LinkedList<String> fileData, 
+                          PipedOutputStream output, BufferedReader input)){
+      handleQuery = output;
+      queryNumber = input;
       int i = 0;
       peerList = new LinkedList<PeerHandler>();
       while(i < Addressing.size()){
-        peerList.add(new PeerHandler(Addressing.peek().hostname, Addressing.getFirst().port, fileData));
+        peerList.add(new PeerHandler(Addressing.peek().hostname, Addressing.getFirst().port, fileData, queryNumber));
         i++;
       }
-      while(i < Addressing.size()){
-        
-      }
+      
     }
     
     private void run(){
       try{
         int i = 0;
         while(i < peerList.size()){
-          peerList.peek().start();
+          peerList.peek().makeConnection();
+          peerList.add(peerList.removeFirst());
           i++;
         }
-        while(1){
-          TimeUnit.SECONDS.sleep(5);
+        try{
+          i = 0;
+          while(i < peerList.size()){
+            peerList.peek().run();
+            peerList.add(peerList.removeFirst());
+            i++;
+          }
+          while(1){
+            ;
+          }
         }
-      }
-      catch (ManagerException e){
-        
+        catch(QueryException e){
+          String handle = e.getAddressAndPeer();
+          output.flush();
+          output.write(handle);
+        }
       }
       catch (InterruptedException e){
         int i = 0;
@@ -132,23 +182,14 @@ public class P2P extends Pipe, Thread{
         }
       }
     }
-    
-    private class ManagerException extends Exception{
-      public ManagerException(String address, PeerHandler me){
-        ;
-      }
-    }
   }
   
   private class PeerHandler extends Thread{
     private final boolean type; //true - PeerHandler for QManager, false - PeerHandler for Manager
     private Peer myPeer;
-    private DataOutputStream input;
-    private BufferedReader output;
     private LinkedList<PeerHandler> peers;
     private LinkedList<String> files;
-    private String myAddress;
-    private int transferResponsePort;
+    private int fileTransferPort;
     
     //peer handler constructor for Manager
     private void PeerHandler(String address){
@@ -161,7 +202,6 @@ public class P2P extends Pipe, Thread{
       files = new LinkedList<String>();
       files.addAll(fileData);
       peers = new LinkedList<PeerHandler>();
-      myAddress = InetAddress.getLocalHost();
       type = true;
     }
     
@@ -172,26 +212,31 @@ public class P2P extends Pipe, Thread{
           connect();
           if(isConnect()){
             String query = input.readLine();
-            String removeHead[] = query.split(":");
-            String components[] = removeHead[1].split(";");
+            String[] removeHead = query.split(":");
+            String[] components = removeHead[1].split(";");
             int i = 0;
-            while(i < files.size()){
-              if(files.peek() == components[1]){
-                String response = "R:"+components[0]+myAddress+":"+
-                  Integer.toString(transferResponsePort)+";"components[1]+"\n";
-                output.writeBytes(response);
-                break;
-              }
-              else{
-                int j = 0;
-                while(j < peers.size()){
-                  peers.peek().forward(query);
-                  peers.add(peers.removeFirst());
-                  j++;
+            if(removeHead[0].equals("Q")){
+              while(i < files.size()){
+                if(files.peek() == components[1]){
+                  String response = "R:"+components[0]+myAddress+":"+
+                    Integer.toString(transferResponsePort)+";"components[1]+"\n";
+                  output.writeBytes(response);
+                  break;
                 }
+                else{
+                  int j = 0;
+                  while(j < peers.size()){
+                    peers.peek().forward(query);
+                    peers.add(peers.removeFirst());
+                    j++;
+                  }
+                }
+                files.add(files.removeFirst());
+                i++;
               }
-              files.add(files.removeFirst());
-              i++;
+            }
+            else{
+              
             }
           }
         }
@@ -222,6 +267,7 @@ public class P2P extends Pipe, Thread{
     
     private void heartbeat(){
       if(!type){
+        setPort("51820");
         if(isConnected()){
           if(!isBusy){
             try{
@@ -252,8 +298,12 @@ public class P2P extends Pipe, Thread{
     }
     
     private class QueryException extends ManagerException{
-      public QueryException(String address, PeerHandler me){
-        super(address, me);
+      private String addressAndPeer
+      private QueryException(String fromPeer){
+        addressAndPeer = fromPeer
+      }
+      private String getAddressAndPeer(){
+        return addressAndPeer;
       }
     }
     
